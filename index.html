@@ -9,10 +9,11 @@
 </head>
 <body>
   <canvas id="stage"></canvas>
+  <div class="vignette"></div>
 
   <header class="head">
     <h1>机械键盘</h1>
-    <p>Blender 建模 · 实时物理 · 合成音效</p>
+    <p>Blender 建模 · 实时装配动画 · 弹簧物理 · 合成音效</p>
   </header>
 
   <div class="typed" id="typed" aria-live="off"><span id="typedText"></span><i class="caret"></i></div>
@@ -34,10 +35,13 @@
       <button class="btn btn-sm" id="explode">全部弹飞</button>
       <button class="btn btn-sm btn-primary" id="restore">装回键帽</button>
       <button class="btn btn-sm" id="resetView">重置视角</button>
+      <button class="btn btn-sm" id="replay">重播装配</button>
     </div>
   </section>
 
-  <p class="hint">直接敲键盘，或用鼠标点按键 · 右键拔下键帽 · 在旋钮上滚动滚轮调音量 · 拖动空白处旋转视角</p>
+  <p class="hint">直接敲键盘，或用鼠标点按键 · 右键拔下键帽看轴体 · 在旋钮上滚动滚轮调音量 · 拖动空白处旋转视角</p>
+
+  <button class="skip" id="skip">跳过装配 ›</button>
 
   <script type="module" src="/src/main.js"></script>
 </body>

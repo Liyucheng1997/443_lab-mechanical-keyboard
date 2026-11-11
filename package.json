@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "model": "\"D:/Blender/blender.exe\" -b -P blender/build_keyboard.py -- --shots hero,detail,top,side --samples 300 --res 2560x1440"
+    "model": "\"D:/Blender/blender.exe\" -b -P blender/build_keyboard.py",
+    "film": "\"D:/Blender/blender.exe\" -b -P blender/build_keyboard.py -- --no-export --anim 1-690 --samples 128 --res 1080x1350 && ffmpeg -y -framerate 30 -start_number 1 -i renders/frames/%04d.png -c:v libx264 -crf 17 -preset slow -pix_fmt yuv420p -movflags +faststart renders/assembly.mp4"
   },
   "dependencies": {
     "cannon-es": "^0.20.0",

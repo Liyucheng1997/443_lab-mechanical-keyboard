@@ -3,13 +3,15 @@
 程序化建模一把 75% 机械键盘（Blender 5.x）。
 
 用法（在项目根目录）:
-  blender -b -P blender/build_keyboard.py -- [--shots hero,detail,top] [--samples 256]
-                                             [--no-export] [--no-save] [--res 1920x1080]
+  blender -b -P blender/build_keyboard.py -- [--stills hero:690,switches:250] [--anim 1-690]
+                                             [--samples 256] [--res 1080x1350] [--out renders]
+                                             [--no-export] [--no-save] [--force]
 
 产物:
-  blender/keyboard.blend              完整场景
+  blender/keyboard.blend              完整场景（含 23 秒装配动画，7 个镜头）
   public/models/keyboard.glb          给网页用的模型
-  renders/<shot>.png                  Cycles 渲染图
+  renders/<name>.png                  --stills 指定的单帧（名字:帧号）
+  renders/frames/0001.png …           --anim 指定的帧区间，已有的帧会跳过
 """
 import bpy, bmesh, sys, os
 from math import radians, sin, cos, tan, pi
@@ -29,9 +31,16 @@ def arg(name, default=None):
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SHOTS = [s for s in str(arg("--shots", "")).split(",") if s and s != "True"]
+STILLS = [s for s in str(arg("--stills", "")).split(",") if s and s != "True"]
+ANIM = arg("--anim", None)
 SAMPLES = int(arg("--samples", 256))
-RES = tuple(int(v) for v in str(arg("--res", "1920x1080")).split("x"))
+RES = tuple(int(v) for v in str(arg("--res", "1080x1350")).split("x"))
+OUT_DIR = os.path.join(ROOT, str(arg("--out", "renders")))
+ANIM_DIR = os.path.join(OUT_DIR, "frames")
+# 画面调子
+VIEW, LOOK, EXPOSURE = "AgX", "AgX - Medium High Contrast", 0.0
+WORLD_STRENGTH = 0.30
+LIGHT_GAIN = 0.31
 DO_EXPORT = not arg("--no-export", False)
 DO_SAVE = not arg("--no-save", False)
 
@@ -58,10 +67,11 @@ PROFILES = {
 }
 
 # 线性色值
-COL_ALPHA = (0.70, 0.66, 0.57)
-COL_MOD = (0.030, 0.065, 0.085)
-COL_ACCENT = (0.80, 0.17, 0.035)
-COL_CASE = (0.72, 0.73, 0.74)
+COL_ALPHA = (0.74, 0.67, 0.54)      # 奶白
+COL_MOD = (0.030, 0.062, 0.155)      # 藏青
+COL_ACCENT = (0.84, 0.22, 0.11)     # 珊瑚
+COL_CASE = (0.022, 0.044, 0.110)     # 阳极氧化藏青
+COL_GOLD = (1.0, 0.72, 0.38)
 
 # ----------------------------------------------------------------------------
 # 网格工具
@@ -165,7 +175,8 @@ class MB:
 # ----------------------------------------------------------------------------
 
 
-def principled(name, color, rough=0.5, metal=0.0, bump=None, coat=0.0, emission=None):
+def principled(name, color, rough=0.5, metal=0.0, bump=None, coat=0.0, emission=None,
+               transmission=0.0, ior=None, sss=0.0):
     m = bpy.data.materials.new(name)
     try:
         m.use_nodes = True
@@ -183,6 +194,14 @@ def principled(name, color, rough=0.5, metal=0.0, bump=None, coat=0.0, emission=
     bsdf.inputs["Metallic"].default_value = metal
     if coat and "Coat Weight" in bsdf.inputs:
         bsdf.inputs["Coat Weight"].default_value = coat
+    if transmission and "Transmission Weight" in bsdf.inputs:
+        bsdf.inputs["Transmission Weight"].default_value = transmission
+    if ior and "IOR" in bsdf.inputs:
+        bsdf.inputs["IOR"].default_value = ior
+    if sss and "Subsurface Weight" in bsdf.inputs:
+        bsdf.inputs["Subsurface Weight"].default_value = sss
+        bsdf.inputs["Subsurface Radius"].default_value = (1.0, 0.7, 0.5)
+        bsdf.inputs["Subsurface Scale"].default_value = 0.0012
     if emission and "Emission Color" in bsdf.inputs:
         bsdf.inputs["Emission Color"].default_value = (*emission[0], 1.0)
         bsdf.inputs["Emission Strength"].default_value = emission[1]
@@ -247,19 +266,26 @@ def add_obj(name, data, parent=None, loc=(0, 0, 0), col=None, mats=()):
     return o
 
 
-M_ALPHA = principled("Keycap_Alpha", COL_ALPHA, rough=0.46, bump=(5200.0, 0.10))
-M_MOD = principled("Keycap_Mod", COL_MOD, rough=0.44, bump=(5200.0, 0.10))
-M_ACCENT = principled("Keycap_Accent", COL_ACCENT, rough=0.44, bump=(5200.0, 0.10))
-M_LEG_DARK = principled("Legend_Dark", (0.022, 0.045, 0.060), rough=0.5)
-M_LEG_LIGHT = principled("Legend_Light", (0.80, 0.77, 0.68), rough=0.5)
-M_CASE = principled("Case_Aluminum", COL_CASE, rough=0.40, metal=1.0, bump=(9000.0, 0.03))
-M_PLATE = principled("Plate", (0.012, 0.013, 0.015), rough=0.55, metal=0.7)
-M_HOUSING = principled("Switch_Housing", (0.014, 0.014, 0.016), rough=0.30)
-M_STEM = principled("Switch_Stem", (0.85, 0.50, 0.05), rough=0.35)
-M_KNOB = principled("Knob", (0.60, 0.61, 0.63), rough=0.30, metal=1.0)
-M_MAT = principled("DeskMat", (0.020, 0.023, 0.027), rough=0.95, bump=(2600.0, 0.5))
-M_CABLE = principled("Cable", (0.62, 0.58, 0.50), rough=0.85, bump=(1500.0, 0.6))
-M_PLUG = principled("Plug", (0.35, 0.36, 0.38), rough=0.35, metal=1.0)
+M_ALPHA = principled("Keycap_Alpha", COL_ALPHA, rough=0.42, bump=(5200.0, 0.08), sss=0.22)
+M_MOD = principled("Keycap_Mod", COL_MOD, rough=0.40, bump=(5200.0, 0.08))
+M_ACCENT = principled("Keycap_Accent", COL_ACCENT, rough=0.40, bump=(5200.0, 0.08), sss=0.15)
+M_LEG_DARK = principled("Legend_Dark", (0.035, 0.070, 0.17), rough=0.5)
+M_LEG_LIGHT = principled("Legend_Light", (0.86, 0.83, 0.76), rough=0.5)
+M_CASE = principled("Case_Aluminum", COL_CASE, rough=0.36, metal=1.0, bump=(9000.0, 0.03))
+M_PLATE = principled("Plate", COL_GOLD, rough=0.30, metal=1.0, bump=(7000.0, 0.02))
+M_PCB = principled("PCB", (0.016, 0.017, 0.019), rough=0.42, coat=0.4)
+M_PAD = principled("PCB_Pad", (1.0, 0.70, 0.30), rough=0.32, metal=1.0)
+M_SILK = principled("PCB_Silk", (0.78, 0.78, 0.76), rough=0.7)
+M_HOLE = principled("PCB_Hole", (0.004, 0.004, 0.004), rough=0.9)
+M_HOUSING_TOP = principled("Switch_Top", (1.0, 1.0, 1.0), rough=0.06, transmission=1.0, ior=1.49)
+M_HOUSING_BOT = principled("Switch_Bottom", (0.82, 0.80, 0.77), rough=0.10, transmission=1.0, ior=1.49)
+M_STEM = principled("Switch_Stem", (0.84, 0.30, 0.20), rough=0.38, sss=0.1)
+M_SPRING = principled("Switch_Spring", (1.0, 0.74, 0.36), rough=0.25, metal=1.0)
+M_STAB = principled("Stabilizer", (0.045, 0.047, 0.052), rough=0.42)
+M_ENC = principled("Encoder", (0.70, 0.71, 0.73), rough=0.28, metal=1.0)
+M_KNOB = principled("Knob", (1.0, 0.70, 0.34), rough=0.24, metal=1.0)
+M_KNOB_MARK = principled("Knob_Mark", COL_MOD, rough=0.5)
+M_FLOOR = principled("Backdrop", (0.72, 0.61, 0.46), rough=0.92)
 
 KIND_MAT = {"a": M_ALPHA, "m": M_MOD, "x": M_ACCENT}
 KIND_LEG = {"a": M_LEG_DARK, "m": M_LEG_LIGHT, "x": M_LEG_LIGHT}
@@ -283,25 +309,25 @@ def build_layout():
             x += w
 
     A, M, X = "a", "m", "x"
-    row(0, 0, [("Escape", "Esc", 1, X), .25,
+    row(0, 0, [("Escape", "esc", 1, X), .25,
                ("F1", "F1", 1, A), ("F2", "F2", 1, A), ("F3", "F3", 1, A), ("F4", "F4", 1, A), .25,
                ("F5", "F5", 1, M), ("F6", "F6", 1, M), ("F7", "F7", 1, M), ("F8", "F8", 1, M), .25,
                ("F9", "F9", 1, A), ("F10", "F10", 1, A), ("F11", "F11", 1, A), ("F12", "F12", 1, A), .25,
-               ("Delete", "Del", 1, M)])
+               ("Delete", "del", 1, M)])
     nums = [("Backquote", "`")] + [("Digit%d" % (i % 10), str(i % 10)) for i in range(1, 11)] + \
            [("Minus", "-"), ("Equal", "=")]
-    row(1.25, 1, [(c, l, 1, A) for c, l in nums] + [("Backspace", "Back", 2, M), .25, ("PageUp", "PgUp", 1, M)])
-    row(2.25, 2, [("Tab", "Tab", 1.5, M)] + [("Key" + ch, ch, 1, A) for ch in "QWERTYUIOP"] +
+    row(1.25, 1, [(c, l, 1, A) for c, l in nums] + [("Backspace", "back", 2, M), .25, ("PageUp", "pg up", 1, M)])
+    row(2.25, 2, [("Tab", "tab", 1.5, M)] + [("Key" + ch, ch, 1, A) for ch in "QWERTYUIOP"] +
         [("BracketLeft", "[", 1, A), ("BracketRight", "]", 1, A), ("Backslash", "\\", 1.5, A), .25,
-         ("PageDown", "PgDn", 1, M)])
-    row(3.25, 3, [("CapsLock", "Caps", 1.75, M)] + [("Key" + ch, ch, 1, A) for ch in "ASDFGHJKL"] +
-        [("Semicolon", ";", 1, A), ("Quote", "'", 1, A), ("Enter", "Enter", 2.25, X), .25,
-         ("Home", "Home", 1, M)])
-    row(4.25, 4, [("ShiftLeft", "Shift", 2.25, M)] + [("Key" + ch, ch, 1, A) for ch in "ZXCVBNM"] +
-        [("Comma", ",", 1, A), ("Period", ".", 1, A), ("Slash", "/", 1, A), ("ShiftRight", "Shift", 1.75, M)])
-    row(5.25, 5, [("ControlLeft", "Ctrl", 1.25, M), ("MetaLeft", "Win", 1.25, M), ("AltLeft", "Alt", 1.25, M),
-                  ("Space", "", 6.25, A), ("AltRight", "Alt", 1, M), ("Fn", "Fn", 1, M),
-                  ("ControlRight", "Ctrl", 1, M)])
+         ("PageDown", "pg dn", 1, M)])
+    row(3.25, 3, [("CapsLock", "caps", 1.75, M)] + [("Key" + ch, ch, 1, A) for ch in "ASDFGHJKL"] +
+        [("Semicolon", ";", 1, A), ("Quote", "'", 1, A), ("Enter", "enter", 2.25, X), .25,
+         ("Home", "home", 1, M)])
+    row(4.25, 4, [("ShiftLeft", "shift", 2.25, M)] + [("Key" + ch, ch, 1, A) for ch in "ZXCVBNM"] +
+        [("Comma", ",", 1, A), ("Period", ".", 1, A), ("Slash", "/", 1, A), ("ShiftRight", "shift", 1.75, M)])
+    row(5.25, 5, [("ControlLeft", "ctrl", 1.25, M), ("MetaLeft", "win", 1.25, M), ("AltLeft", "alt", 1.25, M),
+                  ("Space", "", 6.25, A), ("AltRight", "alt", 1, M), ("Fn", "fn", 1, M),
+                  ("ControlRight", "ctrl", 1, M)])
     keys.append(dict(code="ArrowUp", label="sym:\u25B2", x=14.25, y=4.5, w=1, row=4, kind="m"))
     keys.append(dict(code="ArrowLeft", label="sym:\u25C0", x=13.25, y=5.5, w=1, row=5, kind="m"))
     keys.append(dict(code="ArrowDown", label="sym:\u25BC", x=14.25, y=5.5, w=1, row=5, kind="m"))
@@ -473,36 +499,101 @@ def make_legend(label, ztop, oy, w):
     return me
 
 
+
+
 # ----------------------------------------------------------------------------
-# 轴体
+# 轴体（MX 结构：下壳、透明上盖、轴心、弹簧）—— 坐标原点在定位板上表面的键位中心
 # ----------------------------------------------------------------------------
-def make_switch_housing():
+def sw_ring(mb, hx, hy, r, z):
+    return mb.ring(rring(hx, hy, r, 3, 2, 2), z)
+
+
+def make_switch_bottom():
     mb = MB()
-    a = mb.ring(rring(7.8, 7.8, 0.6, 3, 2, 2), 0.0)
-    b = mb.ring(rring(7.8, 7.8, 0.6, 3, 2, 2), 0.8)
-    c = mb.ring(rring(7.0, 7.0, 0.9, 3, 2, 2), 0.8)
-    d = mb.ring(rring(5.6, 5.9, 1.1, 3, 2, 2), 5.2)
-    mb.cap(a)
-    mb.bridge(a, b)
-    mb.bridge(b, c)
-    mb.bridge(c, d)
-    mb.cap(d)
-    return mb.build("SwitchHousing", sharp_deg=30)
+    rs = [sw_ring(mb, 6.9, 6.9, 0.5, -4.6), sw_ring(mb, 6.9, 6.9, 0.5, 0.0),
+          sw_ring(mb, 7.8, 7.8, 0.6, 0.0), sw_ring(mb, 7.8, 7.8, 0.6, 0.9),
+          sw_ring(mb, 7.2, 7.2, 0.8, 0.9), sw_ring(mb, 7.0, 7.0, 0.8, 2.4),
+          sw_ring(mb, 6.2, 6.2, 0.5, 2.4), sw_ring(mb, 6.2, 6.2, 0.5, -3.8)]
+    mb.cap(rs[0])
+    for a, b in zip(rs, rs[1:]):
+        mb.bridge(a, b)
+    mb.cap(rs[-1])
+    return mb.build("SwitchBottom", sharp_deg=30)
+
+
+def make_switch_top():
+    mb = MB()
+    rs = [sw_ring(mb, 7.0, 7.0, 0.8, 2.4), sw_ring(mb, 5.3, 5.6, 1.0, 6.0),
+          sw_ring(mb, 3.5, 4.2, 0.3, 6.0), sw_ring(mb, 3.5, 4.2, 0.3, 5.2),
+          sw_ring(mb, 4.6, 4.9, 0.8, 5.2), sw_ring(mb, 6.2, 6.2, 0.5, 2.4)]
+    for a, b in zip(rs, rs[1:]):
+        mb.bridge(a, b)
+    mb.bridge(rs[-1], rs[0])
+    return mb.build("SwitchTop", sharp_deg=30)
+
+
+def cross(mb, px, z0, z1):
+    mb.box(px - 2.05, px + 2.05, -0.62, 0.62, z0, z1)
+    mb.box(px - 0.62, px + 0.62, -2.05, 2.05, z0, z1)
 
 
 def make_stem():
     mb = MB()
-    z = -CAP_REST
-    mb.box(-2.9, 2.9, -3.7, 3.7, z + 3.9, z + 5.7)
-    mb.box(-2.05, 2.05, -0.65, 0.65, z + 5.7, z + 9.2)
-    mb.box(-0.58, 0.58, -2.05, 2.05, z + 5.7, z + 9.2)
+    mb.box(-3.2, 3.2, -3.9, 3.9, 2.8, 6.5)
+    mb.box(-1.0, 1.0, -1.0, 1.0, -0.4, 2.8)
+    cross(mb, 0.0, 6.5, 10.1)
     return mb.build("SwitchStem", smooth=False)
 
 
+def make_spring(r=2.3, wire=0.27, h=6.6, turns=6, seg=14, sides=6):
+    mb = MB()
+    rings = []
+    n = turns * seg
+    for i in range(n + 1):
+        a = 2 * pi * i / seg
+        c = Vector((r * cos(a), r * sin(a), h * i / n))
+        rad = Vector((cos(a), sin(a), 0))
+        i0 = len(mb.v)
+        for j in range(sides):
+            b = 2 * pi * j / sides
+            mb.v.append(tuple(c + rad * (wire * cos(b)) + Vector((0, 0, wire * sin(b)))))
+        rings.append(list(range(i0, i0 + sides)))
+    for a, b in zip(rings, rings[1:]):
+        mb.bridge(a, b)
+    mb.cap(rings[0])
+    mb.cap(rings[-1])
+    return mb.build("SwitchSpring", sharp_deg=80)
+
+
+def stab_posts(w):
+    if w >= 6:
+        return [-50.0, 50.0]
+    if w >= 2:
+        return [-11.9, 11.9]
+    return []
+
+
+_stab_cache = {}
+
+
+def make_stab(w):
+    if w not in _stab_cache:
+        hs, st = MB(), MB()
+        for px in stab_posts(w):
+            hs.box(px - 3.3, px + 3.3, -6.6, 5.4, -1.4, 4.6)
+            hs.box(px - 4.2, px + 4.2, -5.0, 3.8, 0.0, 1.2)
+            st.box(px - 2.6, px + 2.6, -2.9, 2.9, 3.0, 6.4)
+            cross(st, px, 6.4, 10.1)
+        _stab_cache[w] = (hs.build("StabHousing_%s" % w, smooth=False), st.build("StabStem_%s" % w, smooth=False))
+    return _stab_cache[w]
+
+
 # ----------------------------------------------------------------------------
-# 外壳 / 定位板 / 旋钮
+# 外壳 / PCB / 定位板 / 编码器 / 旋钮
 # ----------------------------------------------------------------------------
 TT = tan(radians(TILT))
+Z_PCB = -5.0        # PCB 上表面
+Z_FLOOR = -6.6      # 外壳内腔底
 
 
 def zbot(x, y):
@@ -518,6 +609,11 @@ def make_case():
     rs.append(mb.ring(rring(OX - 1.8, OY - 1.8, RC - 1.8, k, mx, my), zbot))
     rs.append(mb.ring(rring(OX, OY, RC, k, mx, my), lambda x, y: zbot(x, y) + 1.8))
     rs.append(mb.ring(rring(OX, OY, RC, k, mx, my), lambda x, y: zbot(x, y) + 2.4))
+    # 上下盖之间的分缝
+    rs.append(mb.ring(rring(OX, OY, RC, k, mx, my), -3.9))
+    rs.append(mb.ring(rring(OX - 0.55, OY - 0.55, RC - 0.55, k, mx, my), -3.55))
+    rs.append(mb.ring(rring(OX - 0.55, OY - 0.55, RC - 0.55, k, mx, my), -2.85))
+    rs.append(mb.ring(rring(OX, OY, RC, k, mx, my), -2.5))
     rs.append(mb.ring(rring(OX, OY, RC, k, mx, my), BEZ - RF - 0.5))
     for phi in (0, 22.5, 45, 67.5, 90):
         o = RF * (1 - cos(radians(phi)))
@@ -526,7 +622,7 @@ def make_case():
     rs.append(mb.ring(rring(PX + 1.1, PY + 1.1, 2.6, k, mx, my), BEZ))
     rs.append(mb.ring(rring(PX + 0.6, PY + 0.6, 2.1, k, mx, my), BEZ))
     rs.append(mb.ring(rring(PX, PY, 1.5, k, mx, my), BEZ - 0.6))
-    rs.append(mb.ring(rring(PX, PY, 1.5, k, mx, my), -0.3))
+    rs.append(mb.ring(rring(PX, PY, 1.5, k, mx, my), Z_FLOOR))
     mb.cap(rs[0])
     for a, b in zip(rs, rs[1:]):
         mb.bridge(a, b)
@@ -534,39 +630,142 @@ def make_case():
     return mb.build("Case", sharp_deg=32)
 
 
-def make_plate():
-    mb = MB()
-    mb.cap(mb.ring(rring(PX - 0.02, PY - 0.02, 1.48, 4, 2, 2), 0.0))
-    me = mb.build("Plate", smooth=False)
+def flat_up(mb, name):
+    me = mb.build(name, smooth=False)
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    flip = [f for f in bm.faces if f.normal.z < 0]
+    if flip:
+        bmesh.ops.reverse_faces(bm, faces=flip)
+    bm.to_mesh(me)
+    bm.free()
     return me
 
 
+def disc(mb, cx, cy, r, z, n=14):
+    mb.cap(mb.ring([(x + cx, y + cy) for x, y in circle(r, n)], z))
+
+
+def annulus(mb, cx, cy, r0, r1, z, n=18):
+    a = mb.ring([(x + cx, y + cy) for x, y in circle(r1, n)], z)
+    b = mb.ring([(x + cx, y + cy) for x, y in circle(r0, n)], z)
+    mb.bridge(a, b)
+
+
+def rect(mb, x0, x1, y0, y1, z):
+    mb.cap(mb.ring([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], z))
+
+
+def make_pcb(layout):
+    """返回 (板, 焊盘, 丝印, 孔) 四个网格，z 以 PCB 上表面为 0。"""
+    board, pads, silk, holes = MB(), MB(), MB(), MB()
+    a = board.ring(rring(PX - 0.25, PY - 0.25, 1.3, 4, 2, 2), Z_FLOOR - Z_PCB + 0.05)
+    b = board.ring(rring(PX - 0.25, PY - 0.25, 1.3, 4, 2, 2), 0.0)
+    board.cap(a)
+    board.bridge(a, b)
+    board.cap(b)
+    zp, zs, zh = 0.04, 0.05, 0.07
+    for k in layout:
+        cx, cy = k["cx"], k["cy"]
+        disc(holes, cx, cy, 2.0, zh, 18)
+        annulus(pads, cx, cy, 2.0, 2.45, zp)
+        for sx in (-5.08, 5.08):
+            disc(holes, cx + sx, cy, 0.88, zh, 12)
+        for (px, py) in ((-3.81, 2.54), (2.54, 5.08)):
+            annulus(pads, cx + px, cy + py, 0.7, 1.55, zp)
+            disc(holes, cx + px, cy + py, 0.72, zh, 12)
+        # 热插拔座焊盘 + 二极管
+        rect(pads, cx - 7.6, cx - 5.6, cy + 1.6, cy + 3.4, zp)
+        rect(pads, cx + 4.6, cx + 6.6, cy + 4.2, cy + 6.0, zp)
+        rect(silk, cx - 1.7, cx + 1.7, cy - 5.5, cy - 4.5, zs)
+        rect(pads, cx - 2.6, cx - 1.9, cy - 5.5, cy - 4.5, zp)
+        rect(pads, cx + 1.9, cx + 2.6, cy - 5.5, cy - 4.5, zp)
+        # 键位角标
+        L, T, E = 1.7, 0.22, 7.6
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                x0, y0 = cx + sx * E, cy + sy * E
+                rect(silk, min(x0, x0 - sx * L), max(x0, x0 - sx * L), y0 - T / 2, y0 + T / 2, zs)
+                rect(silk, x0 - T / 2, x0 + T / 2, min(y0, y0 - sy * L), max(y0, y0 - sy * L), zs)
+        for px in stab_posts(k["w"]):
+            disc(holes, cx + px, cy + 7.0, 1.55, zh, 14)
+            disc(holes, cx + px, cy - 8.2, 2.0, zh, 14)
+    # 丝印文字
+    for (txt, tx, ty, size) in (("KB75  REV 2.0", -PX + 12.0, KEYS_H / 2 - 1.125 * U, 1.9),
+                                ("HOT-SWAP  5-PIN", 20.0, KEYS_H / 2 - 1.125 * U, 1.9)):
+        tv, tf = text_verts(txt, FONT)
+        i0 = len(silk.v)
+        s = size / H_HEIGHT
+        silk.v += [(tx + x * s, ty + (y - H_HEIGHT / 2) * s, zs) for (x, y) in tv]
+        silk.f += [tuple(i0 + i for i in f) for f in tf]
+    return (board.build("PCB", sharp_deg=30), flat_up(pads, "PCB_Pads"),
+            flat_up(silk, "PCB_Silk"), flat_up(holes, "PCB_Holes"))
+
+
+KNOB_X, KNOB_Y = 15.75 * U - KEYS_W / 2, KEYS_H / 2 - 0.5 * U
+
+
+def make_plate(layout):
+    """带开孔的定位板：二维曲线填充 + 挤出 + 倒角。物体原点在板厚中心。"""
+    cu = bpy.data.curves.new("PlateCurve", 'CURVE')
+    cu.dimensions = '2D'
+    cu.fill_mode = 'BOTH'
+
+    def poly(pts):
+        sp = cu.splines.new('POLY')
+        sp.points.add(len(pts) - 1)
+        for p, (x, y) in zip(sp.points, pts):
+            p.co = (x * MM, y * MM, 0, 1)
+        sp.use_cyclic_u = True
+
+    poly(rring(PX - 0.35, PY - 0.35, 1.2, 4, 1, 1))
+    for k in layout:
+        poly(rring(7.0, 7.0, 0.45, 2, 1, 1, ox=k["cx"], oy=k["cy"]))
+        for px in stab_posts(k["w"]):
+            poly(rring(3.5, 6.2, 0.45, 2, 1, 1, ox=k["cx"] + px, oy=k["cy"] - 0.6))
+    poly(rring(6.6, 6.6, 0.6, 2, 1, 1, ox=KNOB_X, oy=KNOB_Y))
+    cu.extrude = 0.63 * MM
+    cu.bevel_depth = 0.12 * MM
+    cu.bevel_resolution = 1
+    tmp = bpy.data.objects.new("PlateTmp", cu)
+    col_kb.objects.link(tmp)
+    bpy.context.view_layer.update()
+    me = bpy.data.meshes.new_from_object(tmp.evaluated_get(bpy.context.evaluated_depsgraph_get()))
+    me.name = "Plate"
+    bpy.data.objects.remove(tmp)
+    bpy.data.curves.remove(cu)
+    for p in me.polygons:
+        p.use_smooth = False
+    return me
+
+
+def make_encoder():
+    mb = MB()
+    mb.box(-6.0, 6.0, -6.0, 6.0, Z_PCB, 3.2)
+    prof = [(3.5, 3.2), (3.5, 5.6), (3.0, 5.6), (3.0, 12.0), (2.6, 12.4)]
+    rs = [mb.ring(circle(r, 24), z) for (r, z) in prof]
+    for a, b in zip(rs, rs[1:]):
+        mb.bridge(a, b)
+    mb.fan(rs[-1], (0, 0, 12.4))
+    return mb.build("Encoder", sharp_deg=30)
+
+
 def make_knob():
-    n = 96
+    n = 120
     mb = MB()
     prof = [  # (r, z, knurl)
-        (5.0, 1.0, 0), (8.5, 1.0, 0), (8.5, 2.4, 0), (8.2, 2.9, 0),
-        (8.2, 3.3, 0.36), (8.2, 14.6, 0.36),
-        (8.2, 15.0, 0), (7.5, 15.9, 0), (6.6, 15.9, 0), (6.2, 15.5, 0), (2.0, 15.4, 0),
+        (5.0, 0.6, 0), (8.9, 0.6, 0), (8.9, 1.6, 0), (8.6, 2.0, 0),
+        (8.6, 2.4, 0.32), (8.6, 12.4, 0.32),
+        (8.6, 12.8, 0), (8.9, 13.2, 0), (8.9, 14.2, 0), (8.2, 15.0, 0), (2.0, 15.0, 0),
     ]
     rs = [mb.ring(circle(r, n, kn), z) for (r, z, kn) in prof]
     mb.cap(rs[0])
     for a, b in zip(rs, rs[1:]):
         mb.bridge(a, b)
-    mb.fan(rs[-1], (0, 0, 15.4))
-    return mb.build("Knob", sharp_deg=28)
-
-
-def make_mat():
-    mb = MB()
-    a = mb.ring(rring(450, 210, 10, 10, 2, 2), -3.0)
-    b = mb.ring(rring(450, 210, 10, 10, 2, 2), -0.7)
-    c = mb.ring(rring(449.3, 209.3, 9.3, 10, 2, 2), 0.0)
-    mb.cap(a)
-    mb.bridge(a, b)
-    mb.bridge(b, c)
-    mb.cap(c)
-    return mb.build("DeskMat", sharp_deg=60)
+    mb.fan(rs[-1], (0, 0, 15.0))
+    mark = MB()
+    mark.box(3.6, 7.4, -0.45, 0.45, 14.9, 15.06)
+    return mb.build("Knob", sharp_deg=28), mark.build("KnobMark", smooth=False)
 
 
 # ----------------------------------------------------------------------------
@@ -579,17 +778,40 @@ root.location = (0, 0, (DF * cos(th) + OY * sin(th)) * MM)
 root.rotation_euler = (th, 0, 0)
 ROOT_M = Matrix.Translation(root.location) @ Matrix.Rotation(th, 4, 'X')
 
-add_obj("Case", make_case(), root, mats=[M_CASE])
-add_obj("Plate", make_plate(), root, mats=[M_PLATE])
-knob = add_obj("Knob", make_knob(), root, loc=(15.75 * U - KEYS_W / 2, KEYS_H / 2 - 0.5 * U, 0), mats=[M_KNOB])
-
-housing_me = make_switch_housing()
-stem_me = make_stem()
 layout = build_layout()
+LAYOUT = {k["code"]: k for k in layout}
+
+add_obj("Case", make_case(), root, mats=[M_CASE])
+pcb_me, pads_me, silk_me, holes_me = make_pcb(layout)
+pcb = add_obj("PCB", pcb_me, root, loc=(0, 0, Z_PCB), mats=[M_PCB])
+add_obj("PCB_Pads", pads_me, pcb, mats=[M_PAD])
+add_obj("PCB_Silk", silk_me, pcb, mats=[M_SILK])
+add_obj("PCB_Holes", holes_me, pcb, mats=[M_HOLE])
+add_obj("Encoder", make_encoder(), root, loc=(KNOB_X, KNOB_Y, 0), mats=[M_ENC])
+plate = add_obj("Plate", make_plate(layout), root, loc=(0, 0, -0.75), mats=[M_PLATE])
+knob_me, mark_me = make_knob()
+knob = add_obj("Knob", knob_me, root, loc=(KNOB_X, KNOB_Y, 4.4), mats=[M_KNOB])
+add_obj("KnobMark", mark_me, knob, mats=[M_KNOB_MARK])
+
+bottom_me, top_me, stem_me, spring_me = make_switch_bottom(), make_switch_top(), make_stem(), make_spring()
+bottom_me.materials.append(M_HOUSING_BOT)
+top_me.materials.append(M_HOUSING_TOP)
+stem_me.materials.append(M_STEM)
+spring_me.materials.append(M_SPRING)
+
+PARTS = {}   # code -> dict(switch, stem, cap, stab_stem)
 for kdef in layout:
     code = kdef["code"]
     cap_me, ztop, oy = make_cap(kdef["w"], kdef["row"], code == "Space")
-    add_obj("Switch_" + code, housing_me, root, loc=(kdef["cx"], kdef["cy"], 0), mats=[])
+    sw = add_obj("Switch_" + code, bottom_me, root, loc=(kdef["cx"], kdef["cy"], 0))
+    add_obj("SwTop_" + code, top_me, sw)
+    add_obj("Spring_" + code, spring_me, sw, loc=(0, 0, -3.8))
+    stem = add_obj("Stem_" + code, stem_me, sw)
+    stab_stem = None
+    if stab_posts(kdef["w"]):
+        hs_me, st_me = make_stab(kdef["w"])
+        stab = add_obj("Stab_" + code, hs_me, plate, loc=(kdef["cx"], kdef["cy"], 0.75), mats=[] if hs_me.materials else [M_STAB])
+        stab_stem = add_obj("StabStem_" + code, st_me, stab, mats=[] if st_me.materials else [M_STAB])
     cap = add_obj("Key_" + code, cap_me, root, loc=(kdef["cx"], kdef["cy"], CAP_REST))
     cap["code"] = code
     cap["w"] = float(kdef["w"])
@@ -599,58 +821,13 @@ for kdef in layout:
         cap_me.materials.append(None)
     cap.material_slots[0].link = 'OBJECT'
     cap.material_slots[0].material = KIND_MAT[kdef["kind"]]
-    add_obj("Stem_" + code, stem_me, cap)
     leg = make_legend(kdef["label"], ztop, oy, kdef["w"])
     if leg:
         add_obj("Legend_" + code, leg, cap, mats=[KIND_LEG[kdef["kind"]]])
-housing_me.materials.append(M_HOUSING)
-stem_me.materials.append(M_STEM)
-
-add_obj("DeskMat", make_mat(), None, loc=(0, 15, 0), mats=[M_MAT])
-
-# 线材 + 插头
-p0 = ROOT_M @ (Vector((-95.0, OY, -3.5)) * MM)
-plug_mb = MB()
-a = plug_mb.ring(rring(5.6, 3.2, 3.0, 6, 2, 2), 0.0)
-b = plug_mb.ring(rring(5.6, 3.2, 3.0, 6, 2, 2), 15.0)
-c = plug_mb.ring(rring(3.0, 2.2, 2.0, 6, 2, 2), 19.0)
-plug_mb.cap(a)
-plug_mb.bridge(a, b)
-plug_mb.bridge(b, c)
-plug_mb.cap(c)
-plug = add_obj("Plug", plug_mb.build("Plug", sharp_deg=35), None, mats=[M_PLUG])
-plug.location = p0
-plug.rotation_euler = (radians(-90), 0, 0)   # 局部 +Z 指向世界 +Y（朝后伸出）
-
-cu = bpy.data.curves.new("CableCurve", 'CURVE')
-cu.dimensions = '3D'
-cu.bevel_depth = 1.9 * MM
-cu.bevel_resolution = 4
-cu.resolution_u = 16
-sp = cu.splines.new('BEZIER')
-pts = [p0 + Vector((0, 0.017, 0)),
-       p0 + Vector((0, 0.045, -0.003)),
-       Vector((p0.x - 0.03, p0.y + 0.10, 0.0019)),
-       Vector((p0.x - 0.13, p0.y + 0.135, 0.0019)),
-       Vector((p0.x - 0.27, p0.y + 0.10, 0.0019)),
-       Vector((p0.x - 0.42, p0.y + 0.14, 0.0019)),
-       Vector((p0.x - 0.62, p0.y + 0.13, 0.0019))]
-sp.bezier_points.add(len(pts) - 1)
-for bp, p in zip(sp.bezier_points, pts):
-    bp.co = p
-    bp.handle_left_type = bp.handle_right_type = 'AUTO'
-tmp = bpy.data.objects.new("CableTmp", cu)
-col_kb.objects.link(tmp)
-bpy.context.view_layer.update()
-cable_me = bpy.data.meshes.new_from_object(tmp.evaluated_get(bpy.context.evaluated_depsgraph_get()))
-cable_me.name = "Cable"
-for p in cable_me.polygons:
-    p.use_smooth = True
-bpy.data.objects.remove(tmp)
-add_obj("Cable", cable_me, None, mats=[M_CABLE])
+    PARTS[code] = dict(switch=sw, stem=stem, cap=cap, stab_stem=stab_stem, cx=kdef["cx"], cy=kdef["cy"], row=kdef["y"], x=kdef["x"])
 
 # ----------------------------------------------------------------------------
-# 导出 GLB
+# 导出 GLB（静止的装配完成状态；网页里的动画由 JS 驱动）
 # ----------------------------------------------------------------------------
 bpy.context.view_layer.update()
 if DO_EXPORT:
@@ -664,12 +841,50 @@ if DO_EXPORT:
                               export_lights=False, export_animations=False)
     print("[kb] exported", out, os.path.getsize(out) // 1024, "KB")
 
+
+def glassify(m, shadow=0.8):
+    """Cycles 默认不算焦散，玻璃会投下死黑的影子；让阴影光线大部分直接穿过去。"""
+    nt = m.node_tree
+    bsdf = next(n for n in nt.nodes if n.type == 'BSDF_PRINCIPLED')
+    out = next(n for n in nt.nodes if n.type == 'OUTPUT_MATERIAL')
+    lp = nt.nodes.new("ShaderNodeLightPath")
+    tr = nt.nodes.new("ShaderNodeBsdfTransparent")
+    mul = nt.nodes.new("ShaderNodeMath")
+    mul.operation = 'MULTIPLY'
+    mul.inputs[1].default_value = shadow
+    mix = nt.nodes.new("ShaderNodeMixShader")
+    nt.links.new(lp.outputs["Is Shadow Ray"], mul.inputs[0])
+    nt.links.new(mul.outputs[0], mix.inputs[0])
+    nt.links.new(bsdf.outputs[0], mix.inputs[1])
+    nt.links.new(tr.outputs[0], mix.inputs[2])
+    nt.links.new(mix.outputs[0], out.inputs["Surface"])
+
+
+glassify(M_HOUSING_TOP)
+glassify(M_HOUSING_BOT)
+
 # ----------------------------------------------------------------------------
-# 摄影棚：桌面、灯光、相机
+# 摄影棚：无缝背景、灯光
 # ----------------------------------------------------------------------------
-desk_me = bpy.data.meshes.new("Desk")
-desk_me.from_pydata([(-3, -3, -0.003), (3, -3, -0.003), (3, 3, -0.003), (-3, 3, -0.003)], [], [(0, 1, 2, 3)])
-add_obj("Desk", desk_me, None, col=col_env, mats=[wood_material()])
+def make_cyc():
+    mb = MB()
+    prof = [(-4000.0, 0.0), (900.0, 0.0)]
+    R = 600.0
+    for i in range(1, 17):
+        a = radians(90.0 * i / 16)
+        prof.append((900.0 + R * sin(a), R * (1 - cos(a))))
+    prof.append((900.0 + R, 4000.0))
+    prev = None
+    for (y, z) in prof:
+        i = len(mb.v)
+        mb.v += [(-5000.0, y, z), (5000.0, y, z)]
+        if prev is not None:
+            mb.f.append((prev, prev + 1, i + 1, i))
+        prev = i
+    return mb.build("Backdrop", sharp_deg=60)
+
+
+add_obj("Backdrop", make_cyc(), None, col=col_env, mats=[M_FLOOR])
 
 world = bpy.data.worlds.new("World")
 scene.world = world
@@ -682,17 +897,8 @@ wnt.nodes.clear()
 w_out = wnt.nodes.new("ShaderNodeOutputWorld")
 w_bg = wnt.nodes.new("ShaderNodeBackground")
 wnt.links.new(w_bg.outputs[0], w_out.inputs[0])
-hdr = os.path.join(bpy.utils.resource_path('LOCAL'), "datafiles", "studiolights", "world", "interior.exr")
-if os.path.exists(hdr):
-    w_env = wnt.nodes.new("ShaderNodeTexEnvironment")
-    w_env.image = bpy.data.images.load(hdr)
-    w_tc = wnt.nodes.new("ShaderNodeTexCoord")
-    w_map = wnt.nodes.new("ShaderNodeMapping")
-    w_map.inputs["Rotation"].default_value = (0, 0, radians(110))
-    wnt.links.new(w_tc.outputs["Generated"], w_map.inputs[0])
-    wnt.links.new(w_map.outputs[0], w_env.inputs[0])
-    wnt.links.new(w_env.outputs[0], w_bg.inputs[0])
-w_bg.inputs[1].default_value = 0.22
+w_bg.inputs[0].default_value = (1.0, 0.93, 0.84, 1.0)
+w_bg.inputs[1].default_value = WORLD_STRENGTH
 
 
 def look_at(obj, target):
@@ -714,19 +920,158 @@ def area_light(name, loc, target, size, power, color=(1, 1, 1)):
     return o
 
 
-area_light("Key", (-0.45, 0.30, 0.70), (0, 0, 0.02), (0.9, 0.6), 14, (1.0, 0.96, 0.90))
-area_light("Fill", (0.55, -0.45, 0.35), (0, 0, 0.02), (0.6, 0.4), 3.0, (0.86, 0.92, 1.0))
-area_light("Rim", (0.25, 0.62, 0.22), (0, 0.02, 0.03), (0.9, 0.12), 9, (1.0, 0.93, 0.85))
+area_light("Key", (-0.55, 0.50, 0.95), (0, 0, 0.0), (1.1, 1.1), 95 * LIGHT_GAIN, (1.0, 0.95, 0.88))
+area_light("Fill", (0.75, -0.55, 0.45), (0, 0, 0.02), (0.9, 0.7), 16 * LIGHT_GAIN, (0.93, 0.95, 1.0))
+area_light("Rim", (0.25, 0.80, 0.30), (0, 0.02, 0.03), (1.2, 0.18), 22 * LIGHT_GAIN, (1.0, 0.93, 0.84))
+area_light("Front", (-0.15, -0.85, 0.30), (0, 0, 0.02), (1.0, 0.25), 9 * LIGHT_GAIN, (1.0, 0.96, 0.92))
 
-CAMS = {
-    #  name: (location, target, lens, fstop, focus_target)
-    "hero": ((-0.27, -0.47, 0.34), (0.012, -0.005, 0.012), 55, 9.0, (-0.03, -0.04, 0.03)),
-    "detail": ((0.27, -0.31, 0.135), (0.035, -0.012, 0.02), 75, 6.3, (0.085, -0.055, 0.03)),
-    "top": ((0.0, -0.06, 0.78), (0.0, 0.003, 0.0), 80, 16.0, (0, 0, 0.02)),
-    "side": ((-0.42, -0.16, 0.07), (-0.05, 0.0, 0.022), 70, 4.0, (-0.16, -0.05, 0.03)),
-}
+# ----------------------------------------------------------------------------
+# 装配动画
+# ----------------------------------------------------------------------------
+import random
+from mathutils import Euler
+
+FPS = 30
+END = 690
+scene.render.fps = FPS
+scene.frame_start, scene.frame_end = 1, END
+try:
+    bpy.context.preferences.edit.keyframe_new_interpolation_type = 'LINEAR'
+except Exception as e:
+    print("[kb] interp pref:", e)
+
+
+def fcurves_of(idb):
+    ad = idb.animation_data
+    if not ad or not ad.action:
+        return []
+    act = ad.action
+    try:
+        return list(act.fcurves)
+    except Exception:
+        pass
+    try:
+        from bpy_extras import anim_utils
+        cb = anim_utils.action_get_channelbag_for_slot(act, ad.action_slot)
+        return list(cb.fcurves) if cb else []
+    except Exception:
+        return list(act.layers[0].strips[0].channelbag(ad.action_slot).fcurves)
+
+
+def appear(o, f):
+    o.scale = (0, 0, 0)
+    o.keyframe_insert("scale", frame=f - 1)
+    o.scale = (1, 1, 1)
+    o.keyframe_insert("scale", frame=f)
+
+
+def drop(o, f_land, height, dur, tilt=(0.0, 0.0, 0.0), land_off=0.0, after=()):
+    """从 height(mm) 高处加速落下，f_land 帧着陆在 rest+land_off，之后按 after=[(帧偏移, z偏移mm)] 走。"""
+    rest = o.location.copy()
+    f0 = f_land - dur
+    appear(o, f0)
+    for i in range(dur + 1):
+        u = i / dur
+        o.location = rest + Vector((0, 0, (land_off + height * (1 - u * u)) * MM))
+        o.rotation_euler = Euler([t * (1 - u) for t in tilt])
+        o.keyframe_insert("location", frame=f0 + i)
+        o.keyframe_insert("rotation_euler", frame=f0 + i)
+    for df, dz in after:
+        o.location = rest + Vector((0, 0, dz * MM))
+        o.keyframe_insert("location", frame=f_land + df)
+    o.location = rest
+    o.rotation_euler = (0, 0, 0)
+
+
+def press(code, f, depth=3.7):
+    p = PARTS[code]
+    for o in (p["cap"], p["stem"], p["stab_stem"]):
+        if o is None:
+            continue
+        base = o.location.copy()
+        for df, d in ((0, 0.0), (2, depth), (3, depth), (6, 0.0)):
+            o.location = base - Vector((0, 0, d * MM))
+            o.keyframe_insert("location", index=2, frame=f + df)
+        o.location = base
+
+
+rnd = random.Random(7)
+F_PLATE = 50
+drop(plate, F_PLATE, 260.0, 14, tilt=(0.02, -0.015, 0.0), after=((3, 1.6), (6, 0.0)))
+
+# 轴体：先在特写里落三颗，然后整片下雨
+FIRST = {"KeyX": 96, "KeyS": 112, "KeyC": 122, "KeyD": 128, "KeyZ": 132}
+sw_time = dict(FIRST)
+rest_codes = [c for c in PARTS if c not in FIRST]
+rest_codes.sort(key=lambda c: PARTS[c]["cx"] * 0.55 - PARTS[c]["cy"] * 0.3 + rnd.uniform(-60, 60))
+for i, c in enumerate(rest_codes):
+    sw_time[c] = 146 + round(96 * i / (len(rest_codes) - 1))
+for c, f in sw_time.items():
+    drop(PARTS[c]["switch"], f, 230.0, 10, tilt=(rnd.uniform(-0.3, 0.3), rnd.uniform(-0.3, 0.3), rnd.uniform(-0.5, 0.5)),
+         land_off=2.4, after=((3, 2.4), (5, 0.0)))
+
+# 键帽：从后排往前排铺
+cap_time = {}
+order = sorted(PARTS, key=lambda c: (PARTS[c]["row"], PARTS[c]["x"]))
+for i, c in enumerate(order):
+    cap_time[c] = 272 + round(92 * i / (len(order) - 1)) + rnd.randint(-2, 2)
+for c, f in cap_time.items():
+    drop(PARTS[c]["cap"], f, 240.0, 10, tilt=(rnd.uniform(-0.5, 0.5), rnd.uniform(-0.5, 0.5), rnd.uniform(-0.6, 0.6)),
+         land_off=2.6, after=((2, 2.6), (4, -2.2), (7, 0.25), (9, 0.0)))
+
+# 旋钮
+F_KNOB = 402
+drop(knob, F_KNOB, 200.0, 11, land_off=1.5, after=((3, 1.5), (5, 0.0)))
+for i in range(0, 46):
+    u = i / 45
+    knob.rotation_euler = (0, 0, -2.6 * (1 - (1 - u) ** 3))
+    knob.keyframe_insert("rotation_euler", index=2, frame=F_KNOB + 8 + i)
+knob.rotation_euler = (0, 0, 0)
+
+# 敲击波纹
+for c, p in PARTS.items():
+    press(c, 462 + round((p["cx"] + 160) / 320 * 58 + (p["row"] % 2) * 3))
+for c, p in PARTS.items():
+    d = ((p["cx"] - 20) ** 2 + (p["cy"] + 5) ** 2) ** 0.5
+    press(c, 580 + round(d * 0.16))
+for i, c in enumerate(["KeyH", "KeyE", "KeyL", "KeyL", "KeyO", "Enter"]):
+    press(c, 640 + i * 5)
+
+# scale 关键帧改成跳变，避免“长出来”
+for o in bpy.data.objects:
+    for fc in fcurves_of(o):
+        if fc.data_path == "scale":
+            for kp in fc.keyframe_points:
+                kp.interpolation = 'CONSTANT'
+
+# ----------------------------------------------------------------------------
+# 相机：每个镜头一台，逐帧打关键帧，时间线标记负责切镜头
+# ----------------------------------------------------------------------------
+def W(code, z=0.0, dx=0.0, dy=0.0):
+    p = PARTS[code]
+    return ROOT_M @ (Vector((p["cx"] + dx, p["cy"] + dy, z)) * MM)
+
+
+KNOB_W = ROOT_M @ (Vector((KNOB_X, KNOB_Y, 12.0)) * MM)
+SHOTS_DEF = [
+    # name, f0, f1, 相机起止位置, 注视点起止, 焦段, 光圈, 对焦点起止
+    ("A_case", 1, 80, (-0.36, -0.40, 0.42), (-0.31, -0.35, 0.36), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 50, 11.0,
+     (-0.05, -0.03, 0.01), (-0.05, -0.03, 0.01)),
+    ("B_first", 81, 138, (-0.250, -0.175, 0.085), (-0.235, -0.180, 0.078), W("KeyD", 3), W("KeyD", 3), 85, 6.3,
+     W("KeyX", 4), W("KeyX", 4)),
+    ("C_switches", 139, 258, (-0.29, -0.30, 0.27), (-0.24, -0.31, 0.24), (-0.02, -0.005, 0.01), (-0.015, -0.005, 0.012), 62, 9.0,
+     (-0.06, -0.04, 0.02), (-0.06, -0.04, 0.02)),
+    ("D_caps", 259, 380, (-0.27, -0.27, 0.15), (-0.21, -0.28, 0.16), (-0.03, 0.0, 0.02), (-0.02, 0.0, 0.02), 65, 8.0,
+     (-0.07, -0.02, 0.03), (-0.05, -0.03, 0.03)),
+    ("E_knob", 381, 452, (0.020, -0.085, 0.105), (0.040, -0.077, 0.097), KNOB_W + Vector((-0.028, -0.014, -0.004)),
+     KNOB_W + Vector((-0.024, -0.012, -0.004)), 95, 9.0, KNOB_W, KNOB_W),
+    ("F_alphas", 453, 545, (-0.075, -0.255, 0.125), (-0.005, -0.255, 0.115), (0.000, -0.012, 0.020), (0.050, -0.012, 0.020), 100, 5.6,
+     W("KeyJ", 13), W("KeyL", 13)),
+    ("G_hero", 546, END, (0.29, -0.15, 0.15), (0.56, -0.29, 0.385), (0.025, 0.0, 0.014), (0.04, -0.012, 0.0), 60, 11.0,
+     (0.05, -0.04, 0.03), (0.05, -0.04, 0.03)),
+]
 cams = {}
-for name, (loc, tgt, lens, fstop, ftgt) in CAMS.items():
+for (name, f0, f1, p0, p1, t0, t1, lens, fstop, fc0, fc1) in SHOTS_DEF:
     cd = bpy.data.cameras.new(name)
     cd.lens = lens
     cd.clip_start, cd.clip_end = 0.01, 50
@@ -734,21 +1079,50 @@ for name, (loc, tgt, lens, fstop, ftgt) in CAMS.items():
     cd.dof.aperture_fstop = fstop
     co = bpy.data.objects.new("Cam_" + name, cd)
     col_env.objects.link(co)
-    co.location = loc
-    look_at(co, tgt)
-    cd.dof.focus_distance = (Vector(ftgt) - co.location).length
+    p0, p1, t0, t1, fc0, fc1 = (Vector(v) for v in (p0, p1, t0, t1, fc0, fc1))
+    for f in range(f0, f1 + 1):
+        u = (f - f0) / max(1, f1 - f0)
+        e = 0.5 * u + 0.5 * u * (2 - u)            # 轻微减速
+        co.location = p0.lerp(p1, e)
+        tgt = t0.lerp(t1, e)
+        look_at(co, tgt)
+        view = (tgt - co.location).normalized()
+        cd.dof.focus_distance = (fc0.lerp(fc1, e) - co.location).dot(view)
+        co.keyframe_insert("location", frame=f)
+        co.keyframe_insert("rotation_euler", frame=f)
+        cd.keyframe_insert("dof.focus_distance", frame=f)
+    mk = scene.timeline_markers.new(name, frame=f0)
+    mk.camera = co
     cams[name] = co
-scene.camera = cams["hero"]
+scene.camera = cams["A_case"]
 
+# ----------------------------------------------------------------------------
 # 渲染设置
+# ----------------------------------------------------------------------------
 scene.render.engine = 'CYCLES'
 scene.render.resolution_x, scene.render.resolution_y = RES
 scene.cycles.samples = SAMPLES
 scene.cycles.use_denoising = True
 scene.cycles.use_adaptive_sampling = True
+scene.cycles.adaptive_threshold = 0.02
+scene.cycles.max_bounces = 16
+scene.cycles.transmission_bounces = 16
+scene.cycles.transparent_max_bounces = 24
+scene.cycles.glossy_bounces = 6
+scene.cycles.caustics_reflective = False
+scene.cycles.caustics_refractive = False
+scene.render.use_motion_blur = True
+scene.render.motion_blur_shutter = 0.5
 try:
-    scene.view_settings.view_transform = 'AgX'
-    scene.view_settings.look = 'AgX - Medium High Contrast'
+    scene.cycles.motion_blur_position = 'START'   # 快门只往后开，物体出现的那一帧不会被前一帧的“零缩放”拖影
+except Exception:
+    scene.render.motion_blur_position = 'START'
+scene.render.use_persistent_data = True
+scene.render.image_settings.file_format = 'PNG'
+try:
+    scene.view_settings.view_transform = VIEW
+    scene.view_settings.look = LOOK
+    scene.view_settings.exposure = EXPOSURE
 except Exception as e:
     print("[kb] view transform:", e)
 try:
@@ -773,13 +1147,28 @@ if DO_SAVE:
     bpy.ops.wm.save_as_mainfile(filepath=blend)
     print("[kb] saved", blend)
 
-for shot in SHOTS:
-    if shot not in cams:
-        print("[kb] unknown shot", shot)
-        continue
-    scene.camera = cams[shot]
-    scene.render.filepath = os.path.join(ROOT, "renders", shot + ".png")
+
+def render_frame(f, path):
+    for (name, f0, f1, *_r) in SHOTS_DEF:
+        if f0 <= f <= f1:
+            scene.camera = cams[name]
+    scene.frame_set(f)
+    scene.render.filepath = path
     bpy.ops.render.render(write_still=True)
-    print("[kb] rendered", scene.render.filepath)
+    print("[kb] rendered", f, path, flush=True)
+
+
+for item in STILLS:
+    name, _, fr = item.partition(":")
+    render_frame(int(fr or name), os.path.join(OUT_DIR, name + ".png"))
+
+if ANIM:
+    a, b = (int(v) for v in ANIM.split("-"))
+    os.makedirs(ANIM_DIR, exist_ok=True)
+    for f in range(a, b + 1):
+        path = os.path.join(ANIM_DIR, "%04d.png" % f)
+        if os.path.exists(path) and not arg("--force", False):
+            continue
+        render_frame(f, path)
 
 print("[kb] done: %d keys" % len(layout))
