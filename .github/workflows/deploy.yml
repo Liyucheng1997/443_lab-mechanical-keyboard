@@ -24,7 +24,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      - run: npm install --no-audit --no-fund   # Vite 8 的可选 wasm 依赖在 Windows 生成的 lock 里缺项，npm ci 会拒绝
       - run: npm run build
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
