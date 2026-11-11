@@ -111,7 +111,7 @@ function addStatic(localCenter, half) {
   return b;
 }
 
-new GLTFLoader().load('/models/keyboard.glb', (gltf) => {
+new GLTFLoader().load(import.meta.env.BASE_URL + 'models/keyboard.glb', (gltf) => {
   scene.add(gltf.scene);
   for (const n of ['DeskMat', 'Cable', 'Plug']) {
     const o = gltf.scene.getObjectByName(n);
